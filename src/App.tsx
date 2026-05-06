@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 type Job = {
   id: number;
@@ -7,6 +7,9 @@ type Job = {
   status: string;
   salary: string;
   date: string;
+  followUpDate: string;
+  cvVersion: string;
+  coverLetterVersion: string;
   link: string;
   notes: string;
 };
@@ -20,6 +23,9 @@ const emptyForm: Job = {
   status: 'Saved',
   salary: '',
   date: '',
+  followUpDate: '',
+  cvVersion: '',
+  coverLetterVersion: '',
   link: '',
   notes: ''
 };
@@ -35,6 +41,21 @@ function daysAgo(date: string) {
   if (days === 0) return 'Today';
   if (days === 1) return '1 day ago';
   return `${days} days ago`;
+}
+
+function addDays(date: string, days: number) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function followUpLabel(job: Job) {
+  if (job.status !== 'Applied') return '';
+  const target = job.followUpDate || addDays(job.date || todayString(), 7);
+  const today = todayString();
+  if (target < today) return `Follow-up overdue: ${target}`;
+  if (target === today) return 'Follow-up today';
+  return `Follow-up: ${target}`;
 }
 
 function normalizeStatus(text: string) {
@@ -53,7 +74,7 @@ function parseQuickAdd(text: string): Job {
 
   if (parts.length >= 2) {
     return {
-      id: 0,
+      ...emptyForm,
       company: parts[0] || '',
       position: parts[1] || '',
       date: parts[2] || todayString(),
@@ -72,7 +93,7 @@ function parseQuickAdd(text: string): Job {
   const first = tokens[0] || words;
 
   return {
-    id: 0,
+    ...emptyForm,
     company: first.split(' ')[0] || 'Unknown company',
     position: first.split(' ').slice(1).join(' ') || 'Position to confirm',
     status,
@@ -90,6 +111,7 @@ export default function App() {
   const [form, setForm] = useState<Job>(emptyForm);
   const [quickText, setQuickText] = useState('');
   const [editingId, setEditingId] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('cv_jobs');
@@ -105,11 +127,12 @@ export default function App() {
 
   const saveJob = () => {
     if (!form.company.trim() || !form.position.trim()) return;
+    const jobToSave = { ...form, date: form.date || todayString(), followUpDate: form.followUpDate || (form.status === 'Applied' ? addDays(form.date || todayString(), 7) : '') };
     if (editingId) {
-      setJobs(jobs.map(job => job.id === editingId ? { ...form, id: editingId, date: form.date || todayString() } : job));
+      setJobs(jobs.map(job => job.id === editingId ? { ...jobToSave, id: editingId } : job));
       setEditingId(null);
     } else {
-      setJobs([{ ...form, id: Date.now(), date: form.date || todayString() }, ...jobs]);
+      setJobs([{ ...jobToSave, id: Date.now() }, ...jobs]);
     }
     setForm(emptyForm);
   };
@@ -128,107 +151,56 @@ export default function App() {
   const addQuickJob = () => {
     if (!quickText.trim()) return;
     const parsed = parseQuickAdd(quickText);
-    setJobs([{ ...parsed, id: Date.now() }, ...jobs]);
+    setJobs([{ ...parsed, followUpDate: parsed.status === 'Applied' ? addDays(parsed.date || todayString(), 7) : '', id: Date.now() }, ...jobs]);
     setQuickText('');
   };
 
-  const deleteJob = (id: number) => {
-    setJobs(jobs.filter(job => job.id !== id));
+  const deleteJob = (id: number) => setJobs(jobs.filter(job => job.id !== id));
+
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(jobs, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cv-applications-${todayString()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const filtered = useMemo(() => {
-    return jobs.filter(job => {
-      const keyword = `${job.company} ${job.position} ${job.notes} ${job.link}`.toLowerCase();
-      const matchSearch = keyword.includes(search.toLowerCase());
-      const matchFilter = filter === 'All' || job.status === filter;
-      return matchSearch && matchFilter;
-    });
-  }, [jobs, search, filter]);
+  const importData = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        if (Array.isArray(data)) setJobs(data.map((job: Partial<Job>) => ({ ...emptyForm, ...job, id: job.id || Date.now() + Math.random() })));
+      } catch {
+        alert('Import failed. Please upload a valid JSON backup.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const filtered = useMemo(() => jobs.filter(job => {
+    const keyword = `${job.company} ${job.position} ${job.notes} ${job.link} ${job.cvVersion} ${job.coverLetterVersion}`.toLowerCase();
+    return keyword.includes(search.toLowerCase()) && (filter === 'All' || job.status === filter);
+  }), [jobs, search, filter]);
 
   const stats = {
     total: jobs.length,
     saved: jobs.filter(j => j.status === 'Saved').length,
     applied: jobs.filter(j => j.status === 'Applied').length,
-    interviews: jobs.filter(j => j.status === 'Interview').length
+    followUps: jobs.filter(j => followUpLabel(j).includes('today') || followUpLabel(j).includes('overdue')).length
   };
 
   return (
     <main className="app-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Fresh Job Board</p>
-          <h1>CV Application Tracker</h1>
-          <p className="subtitle">Save interesting roles, record every CV sent, and keep your job search tidy.</p>
-        </div>
-        <div className="hero-badge">GG</div>
-      </section>
-
-      <section className="stats">
-        <div className="stat-card"><span>Total</span><strong>{stats.total}</strong></div>
-        <div className="stat-card"><span>Saved</span><strong>{stats.saved}</strong></div>
-        <div className="stat-card"><span>Applied</span><strong>{stats.applied}</strong></div>
-        <div className="stat-card"><span>Interview</span><strong>{stats.interviews}</strong></div>
-      </section>
-
-      <section className="quick-panel panel">
-        <div>
-          <h2>Quick Add</h2>
-          <p>Paste a job quickly. Example: “HKSTP | Assistant Design Manager | 2026-05-06 | Saved | HK$35K | https://...”</p>
-        </div>
-        <div className="quick-row">
-          <input value={quickText} onChange={e => setQuickText(e.target.value)} placeholder="未send：HKU Multimedia Officer HK$34K https://..." />
-          <button className="primary-btn" onClick={addQuickJob}>Quick Add</button>
-        </div>
-      </section>
-
-      <section className="workspace">
-        <aside className="panel form-panel">
-          <h2>{editingId ? 'Edit application' : 'Add application'}</h2>
-          <div className="field-grid">
-            <label>Company<input placeholder="e.g. HKSTP" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></label>
-            <label>Position<input placeholder="e.g. Assistant Design Manager" value={form.position} onChange={e => setForm({ ...form, position: e.target.value })} /></label>
-            <label>Status<select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>{statusList.map(s => <option key={s}>{s}</option>)}</select></label>
-            <label>Salary<input placeholder="e.g. HK$35K" value={form.salary} onChange={e => setForm({ ...form, salary: e.target.value })} /></label>
-            <label>Date<input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>
-            <label>Job Link<input placeholder="https://..." value={form.link} onChange={e => setForm({ ...form, link: e.target.value })} /></label>
-            <label className="wide">Notes<textarea placeholder="CV version, cover letter angle, follow-up notes..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></label>
-          </div>
-          <button className="primary-btn" onClick={saveJob}>{editingId ? 'Save Changes' : 'Add Application'}</button>
-          {editingId && <button className="ghost-btn" onClick={cancelEdit}>Cancel Edit</button>}
-        </aside>
-
-        <section className="panel list-panel">
-          <div className="toolbar">
-            <input className="search" placeholder="Search company, role, notes or link..." value={search} onChange={e => setSearch(e.target.value)} />
-            <select className="filter" value={filter} onChange={e => setFilter(e.target.value)}><option>All</option>{statusList.map(s => <option key={s}>{s}</option>)}</select>
-          </div>
-
-          <div className="job-list">
-            {filtered.length === 0 && <div className="empty-state">No jobs yet. Save a role you like, even before sending CV.</div>}
-            {filtered.map(job => (
-              <article className="job-card" key={job.id}>
-                <div className="job-top">
-                  <div>
-                    <h3>{job.company}</h3>
-                    <p>{job.position}</p>
-                  </div>
-                  <span className={`status status-${job.status.toLowerCase()}`}>{job.status}</span>
-                </div>
-                <div className="meta-row">
-                  <span>{job.salary || 'Salary not set'}</span>
-                  <span>{daysAgo(job.date)}</span>
-                </div>
-                {job.link && <a className="job-link" href={job.link} target="_blank" rel="noreferrer">Open job link</a>}
-                {job.notes && <p className="notes">{job.notes}</p>}
-                <div className="card-actions">
-                  <button className="ghost-btn" onClick={() => editJob(job)}>Edit</button>
-                  <button className="danger-btn" onClick={() => deleteJob(job.id)}>Delete</button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      </section>
+      <section className="hero"><div><p className="eyebrow">Fresh Job Board</p><h1>CV Application Tracker</h1><p className="subtitle">Save roles, track CV versions, and never miss a follow-up.</p></div><div className="hero-badge">GG</div></section>
+      <section className="stats"><div className="stat-card"><span>Total</span><strong>{stats.total}</strong></div><div className="stat-card"><span>Saved</span><strong>{stats.saved}</strong></div><div className="stat-card"><span>Applied</span><strong>{stats.applied}</strong></div><div className="stat-card"><span>Follow-ups</span><strong>{stats.followUps}</strong></div></section>
+      <section className="quick-panel panel"><div><h2>Quick Add</h2><p>Example: “HKSTP | Assistant Design Manager | 2026-05-06 | Applied | HK$35K | https://...”</p></div><div className="quick-row"><input value={quickText} onChange={e => setQuickText(e.target.value)} placeholder="未send：HKU Multimedia Officer HK$34K https://..." /><button className="primary-btn" onClick={addQuickJob}>Quick Add</button></div><div className="backup-row"><button className="ghost-btn" onClick={exportData}>Export Backup</button><button className="ghost-btn" onClick={() => fileInputRef.current?.click()}>Import Backup</button><input ref={fileInputRef} type="file" accept="application/json" onChange={importData} hidden /></div></section>
+      <section className="workspace"><aside className="panel form-panel"><h2>{editingId ? 'Edit application' : 'Add application'}</h2><div className="field-grid"><label>Company<input value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></label><label>Position<input value={form.position} onChange={e => setForm({ ...form, position: e.target.value })} /></label><label>Status<select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>{statusList.map(s => <option key={s}>{s}</option>)}</select></label><label>Salary<input value={form.salary} onChange={e => setForm({ ...form, salary: e.target.value })} /></label><label>Date<input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label><label>Follow-up Date<input type="date" value={form.followUpDate} onChange={e => setForm({ ...form, followUpDate: e.target.value })} /></label><label>CV Version<input placeholder="e.g. Assistant Manager v2" value={form.cvVersion} onChange={e => setForm({ ...form, cvVersion: e.target.value })} /></label><label>Cover Letter Version<input placeholder="e.g. HKSTP strategic angle" value={form.coverLetterVersion} onChange={e => setForm({ ...form, coverLetterVersion: e.target.value })} /></label><label>Job Link<input value={form.link} onChange={e => setForm({ ...form, link: e.target.value })} /></label><label className="wide">Notes<textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></label></div><button className="primary-btn" onClick={saveJob}>{editingId ? 'Save Changes' : 'Add Application'}</button>{editingId && <button className="ghost-btn" onClick={cancelEdit}>Cancel Edit</button>}</aside>
+      <section className="panel list-panel"><div className="toolbar"><input className="search" placeholder="Search company, role, CV version or notes..." value={search} onChange={e => setSearch(e.target.value)} /><select className="filter" value={filter} onChange={e => setFilter(e.target.value)}><option>All</option>{statusList.map(s => <option key={s}>{s}</option>)}</select></div><div className="job-list">{filtered.length === 0 && <div className="empty-state">No jobs yet. Save a role you like, even before sending CV.</div>}{filtered.map(job => <article className="job-card" key={job.id}><div className="job-top"><div><h3>{job.company}</h3><p>{job.position}</p></div><span className={`status status-${job.status.toLowerCase()}`}>{job.status}</span></div><div className="meta-row"><span>{job.salary || 'Salary not set'}</span><span>{daysAgo(job.date)}</span></div>{followUpLabel(job) && <div className="followup-alert">{followUpLabel(job)}</div>}<div className="version-row">{job.cvVersion && <span>CV: {job.cvVersion}</span>}{job.coverLetterVersion && <span>CL: {job.coverLetterVersion}</span>}</div>{job.link && <a className="job-link" href={job.link} target="_blank" rel="noreferrer">Open job link</a>}{job.notes && <p className="notes">{job.notes}</p>}<div className="card-actions"><button className="ghost-btn" onClick={() => editJob(job)}>Edit</button><button className="danger-btn" onClick={() => deleteJob(job.id)}>Delete</button></div></article>)}</div></section></section>
     </main>
   );
 }
