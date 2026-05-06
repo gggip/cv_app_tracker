@@ -22,6 +22,10 @@ const emptyForm: Job = {
   notes: ''
 };
 
+function todayString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function daysAgo(date: string) {
   if (!date) return 'No date';
   const diff = Date.now() - new Date(date).getTime();
@@ -31,11 +35,55 @@ function daysAgo(date: string) {
   return `${days} days ago`;
 }
 
+function normalizeStatus(text: string) {
+  const lower = text.toLowerCase();
+  if (lower.includes('interview') || lower.includes('面試')) return 'Interview';
+  if (lower.includes('offer')) return 'Offer';
+  if (lower.includes('reject') || lower.includes('rejected') || lower.includes('唔請')) return 'Rejected';
+  if (lower.includes('saved') || lower.includes('bookmark') || lower.includes('收藏')) return 'Saved';
+  return 'Applied';
+}
+
+function parseQuickAdd(text: string): Job {
+  const cleaned = text.trim();
+  const parts = cleaned.split('|').map(p => p.trim()).filter(Boolean);
+
+  if (parts.length >= 2) {
+    return {
+      id: 0,
+      company: parts[0] || '',
+      position: parts[1] || '',
+      date: parts[2] || todayString(),
+      status: normalizeStatus(parts.join(' ')),
+      salary: parts.find(p => /\$|k|K|萬|薪|salary/i.test(p)) || '',
+      notes: parts.slice(3).join(' | ')
+    };
+  }
+
+  const salaryMatch = cleaned.match(/(?:HK\$?\s*)?\d{2,3}\s?[kK]|\d+\s?萬|\$\s?\d+/);
+  const dateMatch = cleaned.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/?\d{1,2}/);
+  const status = normalizeStatus(cleaned);
+  const words = cleaned.replace(salaryMatch?.[0] || '', '').replace(dateMatch?.[0] || '').replace(/send咗|send左|applied|申請咗|申請左|已申請|cv|CV|expected|status|人工|薪金/g, '').trim();
+  const tokens = words.split(/,|，|\s{2,}/).map(t => t.trim()).filter(Boolean);
+  const first = tokens[0] || words;
+
+  return {
+    id: 0,
+    company: first.split(' ')[0] || 'Unknown company',
+    position: first.split(' ').slice(1).join(' ') || 'Position to confirm',
+    status,
+    salary: salaryMatch?.[0] || '',
+    date: dateMatch?.[0]?.includes('/') ? `2026-${dateMatch[0].replace('/', '-')}` : dateMatch?.[0] || todayString(),
+    notes: cleaned
+  };
+}
+
 export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All');
   const [form, setForm] = useState<Job>(emptyForm);
+  const [quickText, setQuickText] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem('cv_jobs');
@@ -48,8 +96,15 @@ export default function App() {
 
   const addJob = () => {
     if (!form.company.trim() || !form.position.trim()) return;
-    setJobs([{ ...form, id: Date.now(), date: form.date || new Date().toISOString().slice(0, 10) }, ...jobs]);
+    setJobs([{ ...form, id: Date.now(), date: form.date || todayString() }, ...jobs]);
     setForm(emptyForm);
+  };
+
+  const addQuickJob = () => {
+    if (!quickText.trim()) return;
+    const parsed = parseQuickAdd(quickText);
+    setJobs([{ ...parsed, id: Date.now() }, ...jobs]);
+    setQuickText('');
   };
 
   const deleteJob = (id: number) => {
@@ -88,6 +143,17 @@ export default function App() {
         <div className="stat-card"><span>Applied</span><strong>{stats.applied}</strong></div>
         <div className="stat-card"><span>Interview</span><strong>{stats.interviews}</strong></div>
         <div className="stat-card"><span>Offer</span><strong>{stats.offers}</strong></div>
+      </section>
+
+      <section className="quick-panel panel">
+        <div>
+          <h2>Quick Add</h2>
+          <p>Paste one line, e.g. “HKSTP | Assistant Design Manager | 2026-05-06 | Applied | HK$35K | sent tailored CV”.</p>
+        </div>
+        <div className="quick-row">
+          <input value={quickText} onChange={e => setQuickText(e.target.value)} placeholder="5月6日 send咗 HKSTP Assistant Design Manager，expected 35K" />
+          <button className="primary-btn" onClick={addQuickJob}>Quick Add</button>
+        </div>
       </section>
 
       <section className="workspace">
